@@ -1,0 +1,3 @@
+[submodule "exhale-src"]
+	path = exhale-src
+	url = https://gitlab.com/ecodis/exhale.git

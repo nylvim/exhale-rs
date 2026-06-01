@@ -1,0 +1,26 @@
+[package]
+name = "exhale"
+version = "0.1.0"
+authors = ["Vinyl <v@vinl.dev>"]
+edition = "2024"
+description = "High and low level bindings to exhale, the open-source xHE-AAC encoder."
+readme = "README.md"
+repository = "https://github.com/nylvim/exhale-rs"
+license = "MIT or Apache-2.0"
+keywords = ["audio", "codec", "exhale", "aac", "usac"]
+categories = [
+    "api-bindings",
+    "compression",
+    "encoding",
+    "multimedia::audio",
+    "multimedia::encoding",
+]
+links = "exhale"
+
+[build-dependencies]
+cmake = { version = "0.1", optional = true }
+
+[features]
+default = ["bundled"]
+bundled = ["dep:cmake"]
+low-complexity = []
