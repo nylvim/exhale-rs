@@ -20,6 +20,7 @@ fn main() {
 
         let install_dir = cfg.build();
 
+        println!("cargo::rustc-link-lib=stdc++");
         println!("cargo::rustc-link-lib=static=exhale");
 
         #[cfg(not(target_env = "msvc"))]

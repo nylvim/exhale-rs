@@ -1,4 +1,4 @@
-//! High level bindings to exhale, the open-source Extended HE-AAC encoder.
+//! High and low level bindings to exhale, the open-source Extended HE-AAC encoder.
 //!
 //! See upstream docs for details: <https://gitlab.com/ecodis/exhale/-/wikis/api>
 
@@ -39,6 +39,7 @@ pub mod sys {
 }
 
 use core::ffi::{c_uchar, c_uint};
+use core::num::NonZeroU32;
 use core::ptr::NonNull;
 
 /// Channel configuration of the input.
@@ -81,12 +82,15 @@ pub struct EncoderConfig {
     pub channels: Channels,
     /// Independent frame interval.
     pub indep_period: u32,
-    /// Variable bitrate level, must be in range `0..=12`.
+    /// Variable bitrate level, must be in range `0..=9`.
     pub vbr_level: u8,
     /// Enable 2:1 spectral band replication.
     pub enable_sbr: bool,
     /// Use USAC noise filling functionality.
     pub use_noise_filling: bool,
+    /// ISO/IEC 23004-4 `loudnessInfo` payload. See
+    /// [upstream docs](https://gitlab.com/ecodis/exhale/-/wikis/api#unsigned-exhaleinitencoder).
+    pub loudness_info: Option<NonZeroU32>,
 }
 
 impl Default for EncoderConfig {
@@ -99,6 +103,7 @@ impl Default for EncoderConfig {
             vbr_level: 3,
             enable_sbr: false,
             use_noise_filling: true,
+            loudness_info: None,
         }
     }
 }
@@ -107,13 +112,14 @@ impl Default for EncoderConfig {
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```
 /// use exhale::{Encoder, EncoderConfig};
 ///
-/// let mut encoder = Encoder::new(EncoderConfig::default()).unwrap();
-/// let mut input = vec![0i32; encoder.frame_size() * 2];
+/// let config = EncoderConfig::default();
+/// let mut encoder = Encoder::new(config).unwrap();
+/// let mut input = vec![0i32; encoder.frame_size() * config.channels.count()];
 /// // fill input...
-/// let output = encoder.encode_frame_with(&input).unwrap();
+/// let output = encoder.encode_frame(&input).unwrap();
 /// ```
 #[derive(Debug)]
 pub struct Encoder {
@@ -139,14 +145,14 @@ unsafe impl Send for Encoder {}
 unsafe impl Sync for Encoder {}
 
 impl Encoder {
-    /// Create and initialize an encoder.
+    /// Create an encoder from configuration.
     ///
     /// # Errors
     ///
-    /// Returns an error if config is incorrect.
+    /// Returns an error if config is invalid or upon internal error.
     pub fn new(config: EncoderConfig) -> Result<Self, Error> {
-        if config.vbr_level > 12 {
-            return Err(Error);
+        if config.vbr_level > 9 {
+            return Err(Error::ConfigInvalid);
         }
 
         let frame_size = if config.enable_sbr { 2048 } else { 1024 };
@@ -169,35 +175,42 @@ impl Encoder {
         };
 
         let mut asc = [0; 16];
-        let mut asc_size = 0;
-        let result =
-            unsafe { sys::exhaleInitEncoder(ptr, asc.as_mut_ptr() as *mut c_uchar, &mut asc_size) };
-        if result != 0 {
-            return Err(Error);
+        let mut loudness_info = config.loudness_info.map_or(0, |n| n.get());
+        let result = unsafe {
+            sys::exhaleInitEncoder(ptr, asc.as_mut_ptr() as *mut c_uchar, &mut loudness_info)
+        };
+        if result != 0 || ptr.is_null() {
+            return Err(Error::CreateEncoder);
         }
+        let asc_size = loudness_info as u8;
 
         Ok(Self {
             ptr: NonNull::new(ptr).unwrap(),
             input,
             output,
             asc,
-            asc_size: asc_size as u8,
+            asc_size,
             frame_size: frame_size as u16,
             is_first_frame: true,
         })
     }
 
-    /// Encode a frame.
+    /// Encode a frame with given raw data.
     ///
-    /// `input_mut` should be called and the input buffer be filled before calling this method.
-    ///
-    /// Returns a reference to the output, whose data is valid till next call of this method.
+    /// The input should be interleaved, unpacked signed 24-bit PCM data, that is,
+    /// in range of `-8388608..=8388607`.
     ///
     /// # Errors
     ///
-    /// Returns an error if encoding failed.
+    /// Returns an error if input is not long enough or encoding failed.
     #[inline]
-    pub fn encode_frame(&mut self) -> Result<&[u8], Error> {
+    pub fn encode_frame(&mut self, input: &[i32]) -> Result<&[u8], Error> {
+        if input.len() < self.input.len() {
+            return Err(Error::InputTooShort);
+        }
+
+        self.input.copy_from_slice(&input[..self.input.len()]);
+
         let output_len = if self.is_first_frame {
             self.is_first_frame = false;
             unsafe { sys::exhaleEncodeLookahead(self.ptr.as_ptr()) }
@@ -205,47 +218,21 @@ impl Encoder {
             unsafe { sys::exhaleEncodeFrame(self.ptr.as_ptr()) }
         };
 
-        if output_len < 2 {
-            return Err(Error);
+        if output_len < 2 || output_len == 65535 {
+            return Err(Error::EncodeFrame);
         }
         Ok(&self.output[..output_len as usize])
     }
 
-    /// Encode a frame with given frame data.
-    ///
-    /// The input should be interleaved, unpacked signed 24-bit PCM data, that is,
-    /// in range of `-8388608..=8388607`.
-    ///
-    /// Returns a reference to the output, whose data is valid till next call of this method.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if input is not long enough or encoding failed.
-    #[inline]
-    pub fn encode_frame_with(&mut self, input: &[i32]) -> Result<&[u8], Error> {
-        if input.len() < self.input.len() {
-            return Err(Error);
-        }
-        self.input.copy_from_slice(&input[..self.input.len()]);
-        self.encode_frame()
-    }
-
-    /// Get a mutable reference to the input buffer.
-    ///
-    /// The input should be interleaved, unpacked signed 24-bit PCM data, that is,
-    /// in range of `-8388608..=8388607`.
-    #[inline]
-    pub fn input_mut(&mut self) -> &mut [i32] {
-        &mut self.input
-    }
-
     /// Get the required input frame size per channel.
+    ///
+    /// Returns 1024 if `enable_sbr` is set to `false` in the configuration, and 2048 if `true`.
     #[inline]
     pub fn frame_size(&self) -> usize {
         self.frame_size as usize
     }
 
-    /// Get the AudioSpecificConfig (ASC) data.
+    /// Get the `AudioSpecificConfig` (ASC) data.
     #[inline]
     pub fn asc_data(&self) -> &[u8] {
         &self.asc[..self.asc_size as usize]
@@ -254,13 +241,24 @@ impl Encoder {
 
 /// Crate error type.
 #[derive(Debug, Clone, Copy)]
-pub struct Error;
+pub enum Error {
+    ConfigInvalid,
+    InputTooShort,
+    CreateEncoder,
+    EncodeFrame,
+}
 
-impl std::fmt::Display for Error {
+impl core::fmt::Display for Error {
     #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "exhale error")
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let msg = match self {
+            Self::ConfigInvalid => "encoder config is invalid",
+            Self::InputTooShort => "input buffer is too short",
+            Self::CreateEncoder => "internal error when creating the encoder",
+            Self::EncodeFrame => "internal error when encoding a frame",
+        };
+        write!(f, "{msg}")
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}

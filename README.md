@@ -16,12 +16,10 @@ fn main() {
     let config = EncoderConfig::default();
     let mut encoder = Encoder::new(config).unwrap();
 
-    // The input buffer expects interleaved 24-bit PCM data (in i32)
-    let input = encoder.input_mut();
-    // Fill the input buffer...
+    let input = vec![0i32; encoder.frame_size() * config.channels.count()];
+    // fill input...
 
-    // Encode the frame
-    let output = encoder.encode_frame().unwrap();
+    let output: &[u8] = encoder.encode_frame(&input).unwrap();
     println!("Encoded {} bytes", output.len());
 }
 ```
