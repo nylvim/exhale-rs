@@ -1,6 +1,6 @@
 [package]
 name = "exhale"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Vinyl <v@vinl.dev>"]
 edition = "2024"
 description = "High and low level bindings to exhale, the open-source xHE-AAC encoder."
